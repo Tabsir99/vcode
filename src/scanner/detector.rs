@@ -83,7 +83,10 @@ mod tests {
         let cargo_toml = temp_dir.path().join("Cargo.toml");
         fs::write(&cargo_toml, "[package]").unwrap();
 
-        assert_eq!(detect_project_type(temp_dir.path()), Some(ProjectType::Rust));
+        assert_eq!(
+            detect_project_type(temp_dir.path()),
+            Some(ProjectType::Rust)
+        );
     }
 
     #[test]
@@ -92,7 +95,10 @@ mod tests {
         let package_json = temp_dir.path().join("package.json");
         fs::write(&package_json, "{}").unwrap();
 
-        assert_eq!(detect_project_type(temp_dir.path()), Some(ProjectType::JavaScript));
+        assert_eq!(
+            detect_project_type(temp_dir.path()),
+            Some(ProjectType::JavaScript)
+        );
     }
 
     #[test]
