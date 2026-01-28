@@ -17,19 +17,17 @@
 
 ## Installation
 
+**From crates.io (recommended):**
 ```bash
-cargo install --path .
+cargo install vcode
 ```
-
-Or build from source:
+**Or from source:**
 
 ```bash
 git clone https://github.com/Tabsir99/vcode
 cd vcode
-cargo build --release
+cargo install --path .
 ```
-
-## Quick Start
 
 ### First Time Setup
 
