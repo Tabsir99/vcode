@@ -10,8 +10,8 @@ pub mod editor;
 pub mod project;
 
 // Re-export commonly used items
-pub use config::{Config, get_config, init_config, update_config};
+pub use config::{Config, EditorConfig, get_config, get_config_path, init_config, reset_config, update_config};
 pub use editor::{is_vscode_like_editor, open_with_editor};
 pub use project::{
-    delete_project, get_projects, rename_project, reset_projects, resolve_path, set_project,
+    delete_project, get_data_path, get_projects, rename_project, reset_projects, resolve_path, set_project,
 };

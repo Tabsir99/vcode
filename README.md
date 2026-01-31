@@ -4,277 +4,153 @@
 
 **vcode** lets you open projects instantly by name, without navigating through directories. Just type `vcode myproject` and you're in!
 
-## Features
-
-- **Quick Launch** - Open projects by name in seconds
-- **Smart Search** - Find projects by name or path
-- **Project Detection** - Automatically detects Rust, JavaScript, Python, Go, Java, C++, Ruby, PHP, and more
-- **Interactive Mode** - Browse and select projects with modern TUI
-- **Beautiful Tables** - Clean, modern output with pagination
-- **Multiple Editors** - Support for VS Code, Cursor, VSCodium
-- **Smart Scan** - Intelligently discovers projects with filtering options
-- **Fast & Lightweight** - Minimal dependencies, instant startup
-
 ## Installation
 
-**From crates.io (recommended):**
 ```bash
+# From crates.io
 cargo install vcode
-```
-**Or from source:**
 
-```bash
+# Or from source
 git clone https://github.com/Tabsir99/vcode
-cd vcode
-cargo install --path .
+cd vcode && cargo install --path .
 ```
 
-### First Time Setup
-
-On first run, vcode will prompt you for:
-- **Projects Root** - Directory where your projects live (e.g., `~/projects`)
-- **Default Editor** - Your preferred editor (`code`, `cursor`, etc.)
-
-### Basic Usage
+## Quick Start
 
 ```bash
-vcode myproject
-
-vcode myproject -e cursor
-
-vcode myproject -r
+vcode myproject           # Open project in default editor
+vcode myproject -e nvim   # Open with specific editor
+vcode myproject -r        # Reuse existing window
 ```
+
+On first run, vcode will prompt you for your projects directory and default editor.
 
 ## Commands
 
-### Project Management
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `vcode <name>` | - | Open project by name |
+| `vcode add <name> <path>` | `a` | Add project manually |
+| `vcode remove <name>` | `rm` | Remove a project |
+| `vcode list` | `ls` | List all projects |
+| `vcode search <query>` | `find` | Search by name or path |
+| `vcode rename <old> <new>` | `mv` | Rename a project |
+| `vcode scan [path]` | - | Auto-discover projects |
+| `vcode config` | `cfg` | Manage configuration |
+| `vcode clear` | - | Remove all projects |
+
+### Scan Options
 
 ```bash
-vcode add myproject ~/path/to/project
-vcode a myproject ~/path/to/project
-
-vcode remove myproject
-vcode rm myproject
-
-vcode rename old-name new-name
-vcode mv old-name new-name
+vcode scan                    # Scan configured projects root
+vcode scan ~/work --depth 3   # Scan custom path, 3 levels deep
+vcode scan --filter all       # Include all directories
+vcode scan --no-review        # Skip interactive selection
 ```
 
-### Discovery & Search
+### Config Subcommands
 
 ```bash
-vcode list
-vcode ls
-
-vcode list --interactive
-vcode ls -i
-
-vcode search react
-vcode find react
-
-vcode scan
-vcode scan ~/my-projects
-vcode scan ~/my-projects --depth 3
-
-vcode scan --filter auto
-vcode scan --filter all
-
-vcode scan --no-review
+vcode config                  # Show current config
+vcode config show             # Show current config (explicit)
+vcode config set editor nvim  # Set default editor
+vcode config set projects-root ~/dev
+vcode config editors          # List all registered editors
+vcode config add              # Add custom editor (interactive)
+vcode config remove helix     # Remove an editor
+vcode config edit             # Interactive configuration wizard
+vcode config reset            # Reset to defaults
 ```
 
-### Configuration
+### List Options
 
 ```bash
-vcode config
-vcode config --show
-
-vcode config --editor cursor
-vcode config --projects-root ~/projects
-
-vcode clear
-vcode clear --yes
+vcode list --json        # Output as JSON
+vcode list -i            # Select and open interactively
 ```
 
-### Output Formats
+## Project Detection
 
-```bash
-vcode list --json
-```
+When scanning, vcode detects projects by their markers:
 
-## Smart Project Detection
-
-vcode can automatically detect projects by their common markers:
-
-| Language/Type | Markers |
-|---------------|---------|
+| Type | Markers |
+|------|---------|
 | Rust | `Cargo.toml` |
-| JavaScript | `package.json` |
-| TypeScript | `tsconfig.json`, `deno.json` |
-| Python | `requirements.txt`, `setup.py`, `pyproject.toml`, `Pipfile` |
+| JavaScript/TypeScript | `package.json`, `tsconfig.json`, `deno.json` |
+| Python | `requirements.txt`, `pyproject.toml`, `Pipfile` |
 | Go | `go.mod` |
 | Java | `pom.xml`, `build.gradle` |
 | C# | `.csproj`, `.sln` |
 | C/C++ | `CMakeLists.txt`, `Makefile` |
 | Ruby | `Gemfile` |
 | PHP | `composer.json` |
-| Git Repo | `.git` directory |
+| Git | `.git` directory |
 
-When scanning with `--filter auto`, only directories with these markers are included.
+## Data Storage
 
-## Interactive Features
+| File | Location |
+|------|----------|
+| Configuration | `~/.config/vcode/config.json` |
+| Projects | `~/.local/share/vcode/projects.json` |
 
-### Interactive Scan
-After scanning, review and select which projects to add:
-- Use **Space** to toggle selection
-- Use **Arrow keys** to navigate
-- Press **Enter** to confirm
-- All projects selected by default
+### Config Structure
 
-### Interactive List
-Browse your projects and open them directly:
-```bash
-vcode list --interactive
-```
-- Search through projects with fuzzy matching
-- Select with arrow keys
-- Opens immediately in your configured editor
-
-## Examples
-
-### Daily Workflow
-
-```bash
-vcode work
-
-vcode search backend
-vcode api-service
-
-vcode config
+```json
+{
+  "projects_root": "/home/user/projects",
+  "default_editor": "cursor",
+  "editors": {
+    "cursor": { "command": "cursor", "args": ["--no-sandbox"] },
+    "nvim": { "command": "nvim", "args": [] }
+  }
+}
 ```
 
-### Bulk Setup
+### Projects Structure
 
-```bash
-vcode scan ~/projects --depth 2
-
-vcode scan ~/projects --depth 2 --no-review
-
-vcode scan ~/projects --filter all
-
-vcode search "react"
-```
-
-### Project Organization
-
-```bash
-vcode add api ~/work/api-service
-vcode add frontend ~/work/web-app
-vcode add mobile ~/work/mobile-app
-
-vcode list
-
-vcode rename api backend-api
-```
-
-## Output Examples
-
-### List Command
-```
-┌────┬──────────────┬─────────────────────────────────────┐
-│ #  ┆ Name         ┆ Path                                │
-╞════╪══════════════╪═════════════════════════════════════╡
-│ 1  ┆ api-service  ┆ /home/user/projects/api-service     │
-├╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ 2  ┆ frontend     ┆ /home/user/projects/frontend        │
-├╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ 3  ┆ mobile       ┆ /home/user/projects/mobile          │
-└────┴──────────────┴─────────────────────────────────────┘
-
-Total: 3 projects
-```
-
-### Config Command
-```
-Configuration:
-
-  Editor:        cursor
-  Projects Root: /home/user/projects
-```
-
-### Success Messages
-```
-Added project 'myproject'
-Removed project 'oldproject'
-Renamed 'api' → 'backend-api'
-Opening 'myproject' in cursor
+```json
+{
+  "api-service": "/home/user/projects/api-service",
+  "frontend": "/home/user/projects/frontend"
+}
 ```
 
 ## Project Structure
 
 ```
 src/
-├── lib.rs
-├── main.rs
-├── bulk.rs
-├── detector.rs
-├── config.rs
-├── editor.rs
-├── logger.rs
-└── project.rs
+├── main.rs          # CLI entry point and argument parsing
+├── lib.rs           # Library root with module exports
+├── commands.rs      # Command handlers (add, remove, list, etc.)
+├── core/
+│   ├── config.rs    # Configuration management
+│   ├── project.rs   # Project CRUD operations
+│   └── editor.rs    # Editor launching logic
+├── scanner/
+│   ├── scanner.rs   # Directory traversal and project discovery
+│   └── detector.rs  # Project type detection by markers
+└── ui/
+    ├── logger.rs    # Colored console output
+    └── display.rs   # Table formatting with pagination
 ```
 
-## Configuration Files
-
-- **Config**: `~/.config/vcode/config.json`
-- **Projects**: `~/.local/share/vcode/projects.json`
-
-## Command Aliases
-
-For convenience, most commands have short aliases:
-
-| Command | Alias |
-|---------|-------|
-| `add`   | `a`   |
-| `remove`| `rm`  |
-| `list`  | `ls`  |
-| `search`| `find`|
-| `rename`| `mv`  |
-
-## Tips & Tricks
-
-1. **Interactive Mode**: Use `vcode list -i` for a quick way to browse and open projects
-2. **Smart Scanning**: Start with `--depth 2` or `--depth 3` to find projects nested in category folders
-3. **Depth Explained**: The scan checks **all levels up to** the specified depth, finding projects wherever they are
-4. **Filter Modes**: Use `--filter auto` (default) to only add recognized projects, or `--filter all` to include everything
-5. **Quick Search**: Use `vcode search` to quickly filter large project lists
-6. **JSON Export**: Use `vcode list --json` for integration with other tools
-7. **Pagination**: When you have 20+ projects, list automatically paginates for readability
-
-## Development
-
-### Building
+## Examples
 
 ```bash
-cargo build --release
+# Daily workflow
+vcode api                     # Open your API project
+vcode search backend          # Find backend-related projects
+vcode list -i                 # Browse and open interactively
+
+# Initial setup
+vcode scan ~/projects --depth 2   # Discover all projects
+vcode add mobile ~/work/mobile    # Add project manually
+
+# Configuration
+vcode config add                  # Register custom editor (e.g., helix, zed)
+vcode config set editor nvim      # Set as default
+vcode config editors              # See all available editors
 ```
-
-### Testing
-
-```bash
-cargo test
-```
-
-### Contributing
-
-Contributions are welcome! The modular structure makes it easy to add new features.
-
-## Design Philosophy
-
-- **Simple First**: Most commands work without flags
-- **Natural Language**: Commands read like sentences
-- **Beautiful Output**: Clean, modern formatting
-- **Fast**: Optimized for instant feedback
-- **Scalable**: Modular architecture for easy extensions
 
 ## License
 

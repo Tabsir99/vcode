@@ -1,3 +1,4 @@
+use crate::core::config::{get_config, EditorConfig};
 use std::process::{Command, Stdio};
 
 pub fn open_with_editor(
@@ -5,15 +6,26 @@ pub fn open_with_editor(
     project_path: &str,
     reuse: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::new("setsid");
-    command.arg(editor);
+    let config = get_config();
 
-    if ["cursor", "code", "vscodium"].contains(&editor) {
-        command.arg("--no-sandbox");
+    // Try to get editor config, or create a simple one for unknown editors
+    let editor_config = config.get_editor(editor).cloned().unwrap_or_else(|| {
+        EditorConfig::new(editor.to_string())
+    });
+
+    let mut command = Command::new("setsid");
+    command.arg(&editor_config.command);
+
+    // Add configured args
+    for arg in &editor_config.args {
+        command.arg(arg);
     }
 
+    // Add reuse flag if requested and available
     if reuse {
-        command.arg("-r");
+        if let Some(ref flag) = editor_config.reuse_flag {
+            command.arg(flag);
+        }
     }
 
     command.arg(project_path);
