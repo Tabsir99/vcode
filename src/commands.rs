@@ -1,5 +1,5 @@
 use crate::core::{
-    config::{Config, get_config, update_config},
+    config::{EditorConfig, get_config, reset_config, update_config},
     editor::open_with_editor,
     project::{
         delete_project, get_projects, rename_project, reset_projects, resolve_path, set_project,
@@ -7,7 +7,36 @@ use crate::core::{
 };
 use crate::scanner::{FilterMode, add_projects, interactive_select_projects, scan_projects};
 use crate::ui::{LogType, log, print_table};
+use clap::Subcommand;
+use colored::Colorize;
 use std::path::PathBuf;
+
+/// Config subcommand actions
+#[derive(Subcommand, Debug, Clone)]
+pub enum ConfigAction {
+    /// Show current configuration
+    Show,
+    /// Set a configuration value (key: editor, projects-root)
+    Set {
+        /// Key to set
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// List all registered editors
+    Editors,
+    /// Add a custom editor
+    Add,
+    /// Remove an editor
+    Remove {
+        /// Editor name to remove
+        name: String,
+    },
+    /// Interactive configuration wizard
+    Edit,
+    /// Reset configuration to defaults
+    Reset,
+}
 
 pub fn handle_add(name: String, path: String) {
     match set_project(&name, &resolve_path(&path).to_str().unwrap()) {
@@ -196,21 +225,296 @@ pub fn handle_scan(path: Option<String>, depth: u32, filter: String, no_review: 
     }
 }
 
-pub fn handle_config(show: bool, projects_root: Option<String>, editor: Option<String>) {
+pub fn handle_config(action: Option<ConfigAction>) {
+    match action {
+        None => config_show(),
+        Some(ConfigAction::Show) => config_show(),
+        Some(ConfigAction::Set { key, value }) => config_set(&key, &value),
+        Some(ConfigAction::Editors) => config_editors(),
+        Some(ConfigAction::Add) => config_add_editor(),
+        Some(ConfigAction::Remove { name }) => config_remove_editor(&name),
+        Some(ConfigAction::Edit) => config_edit(),
+        Some(ConfigAction::Reset) => config_reset(),
+    }
+}
+
+fn config_show() {
     let config = get_config();
 
-    if show || (projects_root.is_none() && editor.is_none()) {
-        log("Configuration:", LogType::Info);
-        println!("\n  Editor:        {}", config.default_editor);
-        println!("  Projects Root: {}\n", config.projects_root);
-    } else {
-        let updated_config = Config {
-            projects_root: projects_root.unwrap_or(config.projects_root),
-            default_editor: editor.unwrap_or(config.default_editor),
+    println!();
+    println!("  {}", "┌──────────────────────────────────────────────────┐".dimmed());
+    println!(
+        "  {}  {}  {}",
+        "│".dimmed(),
+        format!("{:<10}", "Editor").cyan().bold(),
+        config.default_editor.white()
+    );
+    println!(
+        "  {}  {}  {}",
+        "│".dimmed(),
+        format!("{:<10}", "Projects").cyan().bold(),
+        config.projects_root.white()
+    );
+    println!("  {}", "└──────────────────────────────────────────────────┘".dimmed());
+    println!();
+    println!(
+        "  {}",
+        format!("{} editors  →  vcode config editors", config.editors.len()).dimmed()
+    );
+    println!();
+}
+
+fn config_set(key: &str, value: &str) {
+    let mut config = get_config();
+
+    match key {
+        "editor" => {
+            if !config.editors.contains_key(value) {
+                log(&format!("✗ Unknown editor '{}'. Use 'vcode config editors' to see available options.", value), LogType::Error);
+                return;
+            }
+            config.default_editor = value.to_string();
+        }
+        "projects-root" => {
+            let path = resolve_path(value);
+            if !path.exists() {
+                log(&format!("✗ Path does not exist: {}", path.display()), LogType::Error);
+                return;
+            }
+            config.projects_root = path.to_string_lossy().to_string();
+        }
+        _ => {
+            log(&format!("✗ Unknown key '{}'. Valid keys: editor, projects-root", key), LogType::Error);
+            return;
+        }
+    }
+
+    update_config(&config).expect("Failed to update config");
+    log(&format!("✓ Set {} = {}", key, value), LogType::Success);
+}
+
+fn config_editors() {
+    let config = get_config();
+
+    println!();
+    println!("  ┌─────────────────────────────────────────────────────────┐");
+    println!("  │  Registered Editors                                     │");
+    println!("  └─────────────────────────────────────────────────────────┘");
+    println!();
+
+    let mut editors: Vec<_> = config.editors.iter().collect();
+    editors.sort_by_key(|(name, _)| name.to_lowercase());
+
+    let max_name_len = editors.iter().map(|(n, _)| n.len()).max().unwrap_or(8);
+
+    for (name, editor_config) in editors {
+        let is_default = name == &config.default_editor;
+        let marker = if is_default { " ←" } else { "" };
+
+        let args_display = if editor_config.args.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", editor_config.args.join(" "))
         };
 
-        update_config(&updated_config).expect("Failed to update config");
-        log("✓ Configuration updated", LogType::Success);
+        println!(
+            "  {:<width$}  {}{}{}",
+            name,
+            editor_config.command,
+            args_display,
+            marker,
+            width = max_name_len
+        );
+    }
+
+    println!();
+    println!("  ← indicates default editor");
+    println!();
+    println!("  To change default: vcode config set editor <name>");
+    println!("  To add new:        vcode config add");
+    println!();
+}
+
+fn config_add_editor() {
+    use inquire::{Confirm, Text};
+
+    let mut config = get_config();
+
+    println!();
+    println!("  Add Custom Editor");
+    println!("  ────────────────────────────────────────");
+    println!();
+
+    let name = match Text::new("  Name (e.g., helix, lapce):").prompt() {
+        Ok(n) if !n.trim().is_empty() => n.trim().to_lowercase(),
+        _ => {
+            println!();
+            log("Cancelled", LogType::Info);
+            return;
+        }
+    };
+
+    if config.editors.contains_key(&name) {
+        println!();
+        log(&format!("Editor '{}' already exists", name), LogType::Warning);
+        let confirm = Confirm::new("  Overwrite?")
+            .with_default(false)
+            .prompt();
+        if !matches!(confirm, Ok(true)) {
+            return;
+        }
+    }
+
+    let command = match Text::new("  Command (e.g., hx, /usr/bin/helix):")
+        .with_default(&name)
+        .prompt()
+    {
+        Ok(c) => c,
+        _ => {
+            println!();
+            log("Cancelled", LogType::Info);
+            return;
+        }
+    };
+
+    let args_str = Text::new("  Arguments (space-separated, or empty):")
+        .with_default("")
+        .prompt()
+        .unwrap_or_default();
+
+    let args: Vec<String> = if args_str.trim().is_empty() {
+        Vec::new()
+    } else {
+        args_str.split_whitespace().map(|s| s.to_string()).collect()
+    };
+
+    let reuse_flag = Text::new("  Reuse window flag (e.g., -r, or empty):")
+        .with_default("")
+        .prompt()
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    let editor_config = EditorConfig {
+        command,
+        args,
+        reuse_flag,
+    };
+
+    config.add_editor(name.clone(), editor_config);
+    update_config(&config).expect("Failed to update config");
+
+    println!();
+    log(&format!("✓ Added editor '{}'", name), LogType::Success);
+}
+
+fn config_remove_editor(name: &str) {
+    let mut config = get_config();
+
+    if name == config.default_editor {
+        log("✗ Cannot remove the default editor. Change it first with: vcode config set editor <other>", LogType::Error);
+        return;
+    }
+
+    if config.remove_editor(name) {
+        update_config(&config).expect("Failed to update config");
+        log(&format!("✓ Removed editor '{}'", name), LogType::Success);
+    } else {
+        log(&format!("✗ Editor '{}' not found", name), LogType::Error);
+    }
+}
+
+fn config_edit() {
+    use inquire::Select;
+
+    println!();
+    println!("  ┌─────────────────────────────────────────────────────────┐");
+    println!("  │  Configuration Wizard                                   │");
+    println!("  └─────────────────────────────────────────────────────────┘");
+    println!();
+
+    let mut config = get_config();
+
+    let options = vec![
+        "Set default editor",
+        "Set projects root",
+        "Add custom editor",
+        "Remove editor",
+        "Exit",
+    ];
+
+    loop {
+        match Select::new("  What would you like to do?", options.clone()).prompt() {
+            Ok("Set default editor") => {
+                let editor_names: Vec<&str> = config.editors.keys().map(|s| s.as_str()).collect();
+                if let Ok(selected) = Select::new("  Select editor:", editor_names).prompt() {
+                    config.default_editor = selected.to_string();
+                    update_config(&config).expect("Failed to update config");
+                    println!();
+                    log(&format!("✓ Default editor: {}", selected), LogType::Success);
+                }
+            }
+            Ok("Set projects root") => {
+                use inquire::Text;
+                if let Ok(path) = Text::new("  Projects directory:")
+                    .with_default(&config.projects_root)
+                    .prompt()
+                {
+                    config.projects_root = resolve_path(&path).to_string_lossy().to_string();
+                    update_config(&config).expect("Failed to update config");
+                    println!();
+                    log("✓ Projects root updated", LogType::Success);
+                }
+            }
+            Ok("Add custom editor") => {
+                config_add_editor();
+                config = get_config();
+            }
+            Ok("Remove editor") => {
+                let editor_names: Vec<String> = config.editors.keys().cloned().collect();
+                let editor_refs: Vec<&str> = editor_names.iter().map(|s| s.as_str()).collect();
+                if let Ok(selected) = Select::new("  Select editor to remove:", editor_refs).prompt() {
+                    if selected == config.default_editor {
+                        println!();
+                        log("✗ Cannot remove the default editor", LogType::Error);
+                    } else {
+                        config.remove_editor(selected);
+                        update_config(&config).expect("Failed to update config");
+                        println!();
+                        log(&format!("✓ Removed '{}'", selected), LogType::Success);
+                    }
+                }
+            }
+            Ok("Exit") | Err(_) => {
+                println!();
+                break;
+            }
+            _ => {}
+        }
+        println!();
+    }
+}
+
+fn config_reset() {
+    use inquire::Confirm;
+
+    println!();
+    log("This will reset all settings to defaults.", LogType::Warning);
+    println!();
+
+    let confirm = Confirm::new("  Continue?")
+        .with_default(false)
+        .prompt();
+
+    match confirm {
+        Ok(true) => {
+            reset_config();
+            println!();
+            log("✓ Configuration reset", LogType::Success);
+        }
+        _ => {
+            println!();
+            log("Cancelled", LogType::Info);
+        }
     }
 }
 

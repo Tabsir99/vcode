@@ -1,5 +1,5 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use vcode::{APP_NAME, LogType, commands, log};
+use vcode::{APP_NAME, LogType, commands, commands::ConfigAction, log};
 
 /// A fast CLI project launcher for your favorite code editor
 #[derive(Parser)]
@@ -85,17 +85,11 @@ enum Commands {
         no_review: bool,
     },
 
-    /// View or update configuration
+    /// Manage configuration
+    #[command(visible_alias = "cfg")]
     Config {
-        /// Show current configuration
-        #[arg(long)]
-        show: bool,
-        /// Set projects root directory
-        #[arg(long)]
-        projects_root: Option<String>,
-        /// Set default editor
-        #[arg(long)]
-        editor: Option<String>,
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
     },
 
     /// Clear all projects
@@ -105,6 +99,7 @@ enum Commands {
         yes: bool,
     },
 }
+
 
 fn main() {
     let cli = Cli::parse();
@@ -124,11 +119,7 @@ fn main() {
                 filter,
                 no_review,
             } => commands::handle_scan(path, depth, filter, no_review),
-            Commands::Config {
-                show,
-                projects_root,
-                editor,
-            } => commands::handle_config(show, projects_root, editor),
+            Commands::Config { action } => commands::handle_config(action),
             Commands::Clear { yes } => commands::handle_clear(yes),
         },
         None => match cli.project_name {
