@@ -5,7 +5,7 @@ use crate::core::{
         delete_project, get_projects, rename_project, reset_projects, resolve_path, set_project,
     },
 };
-use crate::scanner::{FilterMode, add_projects, interactive_select_projects, scan_projects};
+use crate::scanner::{FilterMode, add_projects, interactive_select_projects, scan_projects, search_directory_by_name};
 use crate::ui::{LogType, log, print_table};
 use clap::Subcommand;
 use colored::Colorize;
@@ -38,11 +38,91 @@ pub enum ConfigAction {
     Reset,
 }
 
-pub fn handle_add(name: String, path: String) {
-    match set_project(&name, &resolve_path(&path).to_str().unwrap()) {
-        Ok(()) => log(&format!("✓ Added project '{}'", name), LogType::Success),
-        Err(_e) => log("✗ Failed to add project", LogType::Error),
-    };
+pub fn handle_add(name: String, path: Option<String>, find: bool) {
+    if find {
+        handle_find_add(name);
+    } else {
+        match path {
+            Some(p) => {
+                match set_project(&name, &resolve_path(&p).to_str().unwrap()) {
+                    Ok(()) => log(&format!("✓ Added project '{}'", name), LogType::Success),
+                    Err(_e) => log("✗ Failed to add project", LogType::Error),
+                };
+            }
+            None => {
+                log("✗ Path is required when not using --find", LogType::Error);
+                log("Usage: vcode add <name> <path>", LogType::Info);
+                log("   or: vcode add <name> --find", LogType::Info);
+            }
+        }
+    }
+}
+
+fn handle_find_add(name: String) {
+    use inquire::Select;
+
+    log(&format!("Searching for '{}'...", name), LogType::Info);
+
+    match search_directory_by_name(&name) {
+        Ok(matches) => {
+            if matches.is_empty() {
+                log(&format!("✗ No directory named '{}' found", name), LogType::Error);
+                return;
+            }
+
+            if matches.len() == 1 {
+                let found = &matches[0];
+                log(
+                    &format!("✓ Found: {}", found.path.display()),
+                    LogType::Success,
+                );
+
+                match set_project(&found.name, found.path.to_str().unwrap()) {
+                    Ok(()) => log(&format!("✓ Added project '{}'", found.name), LogType::Success),
+                    Err(_) => log("✗ Failed to add project", LogType::Error),
+                }
+                return;
+            }
+
+            // Multiple matches - let user select
+            log(
+                &format!("Found {} matches:", matches.len()),
+                LogType::Info,
+            );
+            println!();
+
+            let options: Vec<String> = matches
+                .iter()
+                .map(|m| format!("{} → {}", m.name, m.path.display()))
+                .collect();
+
+            match Select::new("Select directory to add:", options)
+                .with_page_size(10)
+                .prompt()
+            {
+                Ok(selected) => {
+                    let idx = matches
+                        .iter()
+                        .position(|m| format!("{} → {}", m.name, m.path.display()) == selected)
+                        .unwrap();
+                    let chosen = &matches[idx];
+
+                    match set_project(&chosen.name, chosen.path.to_str().unwrap()) {
+                        Ok(()) => {
+                            log(&format!("✓ Added project '{}'", chosen.name), LogType::Success)
+                        }
+                        Err(_) => log("✗ Failed to add project", LogType::Error),
+                    }
+                }
+                Err(_) => {
+                    log("Selection cancelled", LogType::Info);
+                }
+            }
+        }
+        Err(e) => {
+            log(&format!("✗ Search failed: {}", e), LogType::Error);
+        }
+    }
 }
 
 pub fn handle_remove(name: String) {

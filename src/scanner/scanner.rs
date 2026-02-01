@@ -11,7 +11,6 @@ use super::detector::{ProjectType, detect_project_type};
 use crate::core::project::set_project;
 use crate::ui::logger::{LogType, log};
 use dialoguer::{MultiSelect, theme::ColorfulTheme};
-use std::collections::HashSet;
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 
@@ -19,8 +18,9 @@ use std::path::{Path, PathBuf};
 // Constants
 // =============================================================================
 
-/// Directories to skip during scanning (build artifacts, dependencies, etc.)
+/// Directories to always skip (build artifacts, dependencies, system dirs)
 const SKIP_DIRS: &[&str] = &[
+    // Build artifacts & dependencies
     "node_modules",
     "__pycache__",
     ".pytest_cache",
@@ -47,6 +47,50 @@ const SKIP_DIRS: &[&str] = &[
     "logs",
     "tmp",
     "temp",
+    // Package manager caches
+    ".npm",
+    ".cargo",
+    ".rustup",
+    ".nvm",
+    ".pyenv",
+    ".rbenv",
+    ".gradle",
+    ".m2",
+    ".maven",
+    // Tooling
+    ".docker",
+    ".kube",
+    ".minikube",
+    ".vagrant",
+    ".ansible",
+    ".terraform",
+    ".pulumi",
+    // System
+    ".gnupg",
+    ".ssh",
+    ".pki",
+    ".mozilla",
+    ".thunderbird",
+    ".wine",
+    ".steam",
+    ".local",
+    ".config",
+    ".var",
+    ".Trash",
+    "snap",
+    "go",
+    ".go",
+    // Common non-project dirs
+    "Library",
+    "Pictures",
+    "Music",
+    "Videos",
+    "Movies",
+    "Downloads",
+    "Documents",
+    "Desktop",
+    "Public",
+    "Templates",
 ];
 
 /// Represents a project found during directory scanning
@@ -112,6 +156,99 @@ pub fn scan_projects(
 /// Checks if a directory should be skipped during scanning
 pub fn should_skip_dir(dir_name: &str) -> bool {
     SKIP_DIRS.contains(&dir_name)
+}
+
+// =============================================================================
+// Public API - Directory Search
+// =============================================================================
+
+/// Result of a directory name search
+#[derive(Debug, Clone)]
+pub struct DirectoryMatch {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// Searches the filesystem for directories matching the given name
+///
+/// Starts from the user's home directory and common project locations.
+/// Skips known build/dependency directories (node_modules, target, etc.)
+///
+/// # Arguments
+/// * `dir_name` - The directory name to search for (case-insensitive)
+///
+/// # Returns
+/// Vector of matching directories, sorted by path length (shortest first)
+pub fn search_directory_by_name(dir_name: &str) -> Result<Vec<DirectoryMatch>, Box<dyn std::error::Error>> {
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+
+    let mut matches = Vec::new();
+    let target_name = dir_name.to_lowercase();
+
+    // Search from home directory with reasonable depth
+    search_recursive(&home, &target_name, 0, 6, &mut matches);
+
+    // Sort by path length (prefer shallower matches)
+    matches.sort_by(|a, b| {
+        let depth_a = a.path.components().count();
+        let depth_b = b.path.components().count();
+        depth_a.cmp(&depth_b)
+    });
+
+    // Limit results to avoid overwhelming the user
+    matches.truncate(20);
+
+    Ok(matches)
+}
+
+fn search_recursive(
+    current_path: &Path,
+    target_name: &str,
+    current_depth: u32,
+    max_depth: u32,
+    matches: &mut Vec<DirectoryMatch>,
+) {
+    if current_depth > max_depth {
+        return;
+    }
+
+    let entries = match read_dir(current_path) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+
+        // Skip hidden directories after root level
+        if dir_name.starts_with('.') && current_depth > 0 {
+            continue;
+        }
+
+        if should_skip_dir(dir_name) {
+            continue;
+        }
+
+        if dir_name.to_lowercase() == target_name {
+            matches.push(DirectoryMatch {
+                name: dir_name.to_string(),
+                path: path.clone(),
+            });
+        }
+
+        if current_depth < max_depth {
+            search_recursive(&path, target_name, current_depth + 1, max_depth, matches);
+        }
+    }
 }
 
 // =============================================================================
@@ -195,46 +332,38 @@ fn traverse_and_collect(
         return Ok(());
     }
 
-    let skip_dirs: HashSet<&str> = SKIP_DIRS.iter().copied().collect();
-    let entries = read_dir(current_path)?;
-
-    for entry in entries {
+    for entry in read_dir(current_path)? {
         let path = entry?.path();
 
-        if path.is_dir() {
-            if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-                // Skip directories that are known build artifacts, dependencies, etc.
-                if skip_dirs.contains(dir_name) {
-                    continue;
-                }
+        if !path.is_dir() {
+            continue;
+        }
 
-                if current_depth == target_depth {
-                    // We've reached target depth - check if this is a project
-                    let project_type = detect_project_type(&path);
+        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
 
-                    let should_include = match filter_mode {
-                        FilterMode::Auto => project_type.is_some(),
-                        FilterMode::All => true,
-                    };
+        if should_skip_dir(dir_name) {
+            continue;
+        }
 
-                    if should_include {
-                        found_projects.push(FoundProject {
-                            name: dir_name.to_string(),
-                            path: path.clone(),
-                            project_type,
-                        });
-                    }
-                } else {
-                    // Haven't reached target depth yet - recurse deeper
-                    traverse_and_collect(
-                        &path,
-                        target_depth,
-                        current_depth + 1,
-                        found_projects,
-                        filter_mode,
-                    )?;
-                }
+        if current_depth == target_depth {
+            let project_type = detect_project_type(&path);
+            let should_include = match filter_mode {
+                FilterMode::Auto => project_type.is_some(),
+                FilterMode::All => true,
+            };
+
+            if should_include {
+                found_projects.push(FoundProject {
+                    name: dir_name.to_string(),
+                    path: path.clone(),
+                    project_type,
+                });
             }
+        } else {
+            traverse_and_collect(&path, target_depth, current_depth + 1, found_projects, filter_mode)?;
         }
     }
 

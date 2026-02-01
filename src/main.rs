@@ -32,8 +32,11 @@ enum Commands {
     Add {
         /// Project name
         name: String,
-        /// Project path
-        path: String,
+        /// Project path (optional when using --find)
+        path: Option<String>,
+        /// Search filesystem for directory with this name and add it
+        #[arg(long, short = 'f')]
+        find: bool,
     },
 
     /// Remove a project
@@ -106,7 +109,7 @@ fn main() {
 
     match cli.command {
         Some(cmd) => match cmd {
-            Commands::Add { name, path } => commands::handle_add(name, path),
+            Commands::Add { name, path, find } => commands::handle_add(name, path, find),
             Commands::Remove { name } => commands::handle_remove(name),
             Commands::List { json, interactive } => {
                 commands::handle_list(json, interactive, cli.reuse, cli.editor)
