@@ -1,5 +1,6 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use vcode::{APP_NAME, LogType, commands, commands::ConfigAction, log};
+use clap_complete::Shell;
+use vcode::{APP_NAME, LogType, commands, commands::ConfigAction, commands::SortKey, log};
 
 /// A fast CLI project launcher for your favorite code editor
 #[derive(Parser)]
@@ -55,6 +56,12 @@ enum Commands {
         /// Interactive mode - select a project to open
         #[arg(short, long)]
         interactive: bool,
+        /// Sort projects by this key
+        #[arg(short, long, value_enum, default_value_t = SortKey::Name)]
+        sort: SortKey,
+        /// Filter by project type (e.g. rust, javascript, python, go)
+        #[arg(short = 'F', long)]
+        filter: Option<String>,
     },
 
     /// Search projects by name or path
@@ -101,6 +108,39 @@ enum Commands {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Register the current directory as a project and open it
+    Here {
+        /// Project name (defaults to current directory basename)
+        name: Option<String>,
+    },
+
+    /// Print the path of a project (for shell scripting, e.g. `cd $(vcode where api)`)
+    Where {
+        /// Project name (supports fuzzy match)
+        name: String,
+    },
+
+    /// Remove projects whose paths no longer exist on disk
+    Prune {
+        /// Skip confirmation
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Change the path of an existing project
+    Update {
+        /// Project name
+        name: String,
+        /// New path
+        path: String,
+    },
+
+    /// Generate shell completion script (bash, zsh, fish, powershell, elvish)
+    Completions {
+        /// Target shell
+        shell: Shell,
+    },
 }
 
 
@@ -111,9 +151,12 @@ fn main() {
         Some(cmd) => match cmd {
             Commands::Add { name, path, find } => commands::handle_add(name, path, find),
             Commands::Remove { name } => commands::handle_remove(name),
-            Commands::List { json, interactive } => {
-                commands::handle_list(json, interactive, cli.reuse, cli.editor)
-            }
+            Commands::List {
+                json,
+                interactive,
+                sort,
+                filter,
+            } => commands::handle_list(json, interactive, cli.reuse, cli.editor, sort, filter),
             Commands::Search { query } => commands::handle_search(query),
             Commands::Rename { old_name, new_name } => commands::handle_rename(old_name, new_name),
             Commands::Scan {
@@ -124,6 +167,14 @@ fn main() {
             } => commands::handle_scan(path, depth, filter, no_review),
             Commands::Config { action } => commands::handle_config(action),
             Commands::Clear { yes } => commands::handle_clear(yes),
+            Commands::Here { name } => commands::handle_here(name, cli.reuse, cli.editor),
+            Commands::Where { name } => commands::handle_where(name),
+            Commands::Prune { yes } => commands::handle_prune(yes),
+            Commands::Update { name, path } => commands::handle_update(name, path),
+            Commands::Completions { shell } => {
+                let mut cmd = Cli::command();
+                clap_complete::generate(shell, &mut cmd, APP_NAME, &mut std::io::stdout());
+            }
         },
         None => match cli.project_name {
             Some(project_name) => {

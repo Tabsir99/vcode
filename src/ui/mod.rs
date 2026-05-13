@@ -8,5 +8,5 @@ pub mod display;
 pub mod logger;
 
 // Re-export commonly used items
-pub use display::print_table;
+pub use display::{print_project_rows, print_table};
 pub use logger::{LogType, log};

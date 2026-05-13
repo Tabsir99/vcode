@@ -13,5 +13,6 @@ pub mod project;
 pub use config::{Config, EditorConfig, get_config, get_config_path, init_config, reset_config, update_config};
 pub use editor::{is_vscode_like_editor, open_with_editor};
 pub use project::{
-    delete_project, get_data_path, get_projects, rename_project, reset_projects, resolve_path, set_project,
+    delete_project, get_data_path, get_projects, path_basename, rename_project, reset_projects,
+    resolve_path, set_project, set_project_validated, try_resolve_existing_dir, write_projects,
 };
