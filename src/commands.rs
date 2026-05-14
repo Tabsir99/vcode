@@ -331,21 +331,47 @@ pub fn handle_search(query: String, fs: bool) {
     }
 }
 
-/// Walk the filesystem under $HOME for directories whose name contains `query`,
-/// then run the same multi-select + add flow that `vcode scan` uses. Lets the
-/// user adopt projects living outside their configured projects root.
+/// Walk the configured projects root for directories whose name contains
+/// `query`, then run the same multi-select + add flow that `vcode scan` uses.
+/// Lets the user adopt projects that live in their projects root but weren't
+/// picked up by `vcode scan` (e.g. nested deeper than the scan depth).
 fn handle_filesystem_search(query: String) {
     if query.trim().is_empty() {
         log("✗ Query is empty", LogType::Error);
         std::process::exit(1);
     }
 
+    let config = get_config();
+    let base = resolve_path(&config.projects_root);
+    if !base.is_dir() {
+        log(
+            &format!(
+                "✗ Projects root is not a directory: {}",
+                base.display()
+            ),
+            LogType::Error,
+        );
+        log(
+            "Set it with: vcode config set projects-root <path>",
+            LogType::Info,
+        );
+        std::process::exit(1);
+    }
+
     log(
-        &format!("Searching filesystem for '{}'...", query),
+        &format!(
+            "Searching '{}' for directories matching '{}'...",
+            base.display(),
+            query
+        ),
         LogType::Info,
     );
 
-    let matches = match crate::scanner::search_directories(&query, crate::scanner::NameMatch::Substring) {
+    let matches = match crate::scanner::search_directories(
+        &base,
+        &query,
+        crate::scanner::NameMatch::Substring,
+    ) {
         Ok(m) => m,
         Err(e) => {
             log(&format!("✗ Search failed: {}", e), LogType::Error);
@@ -355,7 +381,11 @@ fn handle_filesystem_search(query: String) {
 
     if matches.is_empty() {
         log(
-            &format!("No directories matching '{}' found under $HOME", query),
+            &format!(
+                "No directories matching '{}' found under {}",
+                query,
+                base.display()
+            ),
             LogType::Info,
         );
         return;

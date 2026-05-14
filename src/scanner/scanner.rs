@@ -195,21 +195,24 @@ impl NameMatch {
     }
 }
 
-/// Walks the filesystem from the user's home directory looking for directories
-/// whose name matches `query` under the given `mode`. Skips known build /
-/// dependency / system directories. Results are sorted by path depth (then by
-/// name length for substring mode, so closer-to-exact hits surface first) and
-/// truncated to a sane limit.
+/// Walks the filesystem from `base` looking for directories whose name matches
+/// `query` under the given `mode`. Skips known build / dependency / system
+/// directories. Results are sorted by path depth (then by name length for
+/// substring mode, so closer-to-exact hits surface first) and truncated to a
+/// sane limit.
 pub fn search_directories(
+    base: &Path,
     query: &str,
     mode: NameMatch,
 ) -> Result<Vec<DirectoryMatch>, Box<dyn std::error::Error>> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    if !base.is_dir() {
+        return Err(format!("Search root is not a directory: {}", base.display()).into());
+    }
 
     let mut matches = Vec::new();
     let target = query.to_lowercase();
 
-    search_recursive(&home, &target, mode, 0, 6, &mut matches);
+    search_recursive(base, &target, mode, 0, 6, &mut matches);
 
     matches.sort_by(|a, b| {
         let depth_a = a.path.components().count();
@@ -225,11 +228,13 @@ pub fn search_directories(
     Ok(matches)
 }
 
-/// Thin wrapper preserved for existing callers: exact-name filesystem search.
+/// Thin wrapper preserved for existing callers: exact-name filesystem search
+/// rooted at the user's home directory (used by `vcode add --find`).
 pub fn search_directory_by_name(
     dir_name: &str,
 ) -> Result<Vec<DirectoryMatch>, Box<dyn std::error::Error>> {
-    search_directories(dir_name, NameMatch::Exact)
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    search_directories(&home, dir_name, NameMatch::Exact)
 }
 
 fn search_recursive(
