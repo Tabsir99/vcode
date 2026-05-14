@@ -16,7 +16,8 @@ pub mod ui;
 // Re-export commonly used items for convenience
 pub use core::{
     Config, delete_project, get_config, get_projects, init_config, open_with_editor,
-    rename_project, reset_projects, resolve_path, set_project,
+    path_basename, rename_project, reset_projects, resolve_path, set_project,
+    set_project_validated, try_resolve_existing_dir, write_projects,
 };
 pub use scanner::{
     FilterMode, FoundProject, ProjectType, add_projects, detect_project_type,

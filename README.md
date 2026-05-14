@@ -21,6 +21,9 @@ cd vcode && cargo install --path .
 vcode myproject           # Open project in default editor
 vcode myproject -e nvim   # Open with specific editor
 vcode myproject -r        # Reuse existing window
+vcode .                   # Open current directory (no registration needed)
+vcode ../sibling          # Open any path directly
+vcode api                 # Fuzzy match — opens 'api-service' if it's the only hit
 ```
 
 On first run, vcode will prompt you for your projects directory and default editor.
@@ -29,15 +32,29 @@ On first run, vcode will prompt you for your projects directory and default edit
 
 | Command | Alias | Description |
 |---------|-------|-------------|
-| `vcode <name>` | - | Open project by name |
+| `vcode <name\|path>` | - | Open project by name, or open a directory path directly |
 | `vcode add <name> <path>` | `a` | Add project manually |
+| `vcode add <path>` | `a` | Add project — name inferred from basename |
+| `vcode here [name]` | - | Register current directory and open it |
+| `vcode where <name>` | - | Print the project's path (for shell scripting) |
+| `vcode update <name> <new-path>` | - | Change a project's path |
 | `vcode remove <name>` | `rm` | Remove a project |
+| `vcode prune` | - | Remove projects whose paths no longer exist |
 | `vcode list` | `ls` | List all projects |
 | `vcode search <query>` | `find` | Search by name or path |
 | `vcode rename <old> <new>` | `mv` | Rename a project |
 | `vcode scan [path]` | - | Auto-discover projects |
 | `vcode config` | `cfg` | Manage configuration |
+| `vcode completions <shell>` | - | Generate shell completion script |
 | `vcode clear` | - | Remove all projects |
+
+### Opening behavior
+
+`vcode <arg>` tries the following in order, opening the first match:
+
+1. **Exact project name** in the registry
+2. **Path fallback** — if `<arg>` resolves to an existing directory (e.g. `.`, `../foo`, `~/work/x`, `/abs/path`), open it directly
+3. **Fuzzy match** — case-insensitive substring search across project names. A single match opens automatically; multiple matches show a picker
 
 ### Scan Options
 
@@ -65,8 +82,22 @@ vcode config reset            # Reset to defaults
 ### List Options
 
 ```bash
-vcode list --json        # Output as JSON
-vcode list -i            # Select and open interactively
+vcode list --json                # Output as JSON
+vcode list -i                    # Select and open interactively
+vcode list --sort path           # Sort by name (default), path, or type
+vcode list --filter rust         # Show only Rust projects
+vcode list -F javascript --sort type
+```
+
+### Shell Integration
+
+```bash
+# Jump into a project directory in your shell
+cd "$(vcode where myproject)"
+
+# Generate completions (bash, zsh, fish, powershell, elvish)
+vcode completions zsh > ~/.zsh/completions/_vcode
+vcode completions bash > /etc/bash_completion.d/vcode
 ```
 
 ## Project Detection

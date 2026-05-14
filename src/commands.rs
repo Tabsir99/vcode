@@ -2,14 +2,28 @@ use crate::core::{
     config::{EditorConfig, get_config, reset_config, update_config},
     editor::open_with_editor,
     project::{
-        delete_project, get_projects, rename_project, reset_projects, resolve_path, set_project,
+        delete_project, get_projects, path_basename, rename_project, reset_projects, resolve_path,
+        set_project, set_project_validated, try_resolve_existing_dir, write_projects,
     },
 };
-use crate::scanner::{FilterMode, add_projects, interactive_select_projects, scan_projects, search_directory_by_name};
-use crate::ui::{LogType, log, print_table};
-use clap::Subcommand;
+use crate::scanner::{
+    FilterMode, ProjectType, add_projects, detect_project_type, interactive_select_projects,
+    scan_projects, search_directory_by_name,
+};
+use crate::ui::{LogType, log, print_project_rows, print_table};
+use clap::{Subcommand, ValueEnum};
 use colored::Colorize;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Sort order for `vcode list`. Wired into clap via `ValueEnum` so bad inputs
+/// are rejected at parse time and shell completion lists the choices.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Name,
+    Path,
+    Type,
+}
 
 /// Config subcommand actions
 #[derive(Subcommand, Debug, Clone)]
@@ -41,21 +55,71 @@ pub enum ConfigAction {
 pub fn handle_add(name: String, path: Option<String>, find: bool) {
     if find {
         handle_find_add(name);
-    } else {
-        match path {
-            Some(p) => {
-                match set_project(&name, &resolve_path(&p).to_str().unwrap()) {
-                    Ok(()) => log(&format!("✓ Added project '{}'", name), LogType::Success),
-                    Err(_e) => log("✗ Failed to add project", LogType::Error),
-                };
-            }
+        return;
+    }
+
+    let (project_name, raw_path) = match path {
+        Some(p) => (name, p),
+        None => match infer_name_from_path_arg(&name) {
+            Some(inferred) => (inferred, name),
             None => {
                 log("✗ Path is required when not using --find", LogType::Error);
                 log("Usage: vcode add <name> <path>", LogType::Info);
+                log(
+                    "   or: vcode add <path>            (name inferred from basename)",
+                    LogType::Info,
+                );
                 log("   or: vcode add <name> --find", LogType::Info);
+                std::process::exit(1);
             }
+        },
+    };
+
+    // Warn (but don't block) when overwriting an existing project. The check
+    // happens before write to give the user a heads-up at the right moment.
+    let existing = get_projects();
+    if let Some(old_path) = existing.get(&project_name) {
+        let resolved_str = resolve_path(&raw_path).to_string_lossy().into_owned();
+        if old_path != &resolved_str {
+            log(
+                &format!("⚠ Overwriting '{}' (was: {})", project_name, old_path),
+                LogType::Warning,
+            );
         }
     }
+
+    match set_project_validated(&project_name, &raw_path) {
+        Ok(resolved) => log(
+            &format!("✓ Added project '{}' → {}", project_name, resolved.display()),
+            LogType::Success,
+        ),
+        Err(e) => {
+            log(&format!("✗ {}", e), LogType::Error);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// When the user passes only one positional argument to `add`, decide whether
+/// it should be treated as a path (with the name inferred from its basename).
+/// Returns the inferred name if so, or None if the argument looks like a bare
+/// project name.
+fn infer_name_from_path_arg(arg: &str) -> Option<String> {
+    if !looks_like_path(arg) && try_resolve_existing_dir(arg).is_none() {
+        return None;
+    }
+    let base = path_basename(&resolve_path(arg));
+    if base.is_empty() { None } else { Some(base) }
+}
+
+fn looks_like_path(s: &str) -> bool {
+    s == "."
+        || s == ".."
+        || s.starts_with("./")
+        || s.starts_with("../")
+        || s.starts_with('~')
+        || s.starts_with('/')
+        || s.contains('/')
 }
 
 fn handle_find_add(name: String) {
@@ -132,62 +196,112 @@ pub fn handle_remove(name: String) {
     }
 }
 
-pub fn handle_list(json: bool, interactive: bool, reuse: bool, editor_override: Option<String>) {
+pub fn handle_list(
+    json: bool,
+    interactive: bool,
+    reuse: bool,
+    editor_override: Option<String>,
+    sort: SortKey,
+    filter: Option<String>,
+) {
     let projects = get_projects();
 
+    // Detect project types up front when needed (filter or sort=type) so the
+    // expensive marker-file scan runs once per project rather than once per
+    // pipeline stage.
+    let needs_types = filter.is_some() || sort == SortKey::Type;
+    let mut rows: Vec<TypedRow> = projects
+        .into_iter()
+        .map(|(name, path)| {
+            let ty = if needs_types {
+                detect_project_type(Path::new(&path))
+            } else {
+                None
+            };
+            TypedRow { name, path, ty }
+        })
+        .collect();
+
+    if let Some(type_filter) = filter.as_deref() {
+        let target = type_filter.to_lowercase();
+        rows.retain(|r| {
+            r.ty.map(|t| t.name().to_lowercase() == target)
+                .unwrap_or(false)
+        });
+    }
+
+    sort_rows(&mut rows, sort);
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&projects).unwrap());
+        let map: HashMap<&str, &str> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.path.as_str()))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&map).unwrap());
         return;
     }
 
     if interactive {
-        if projects.is_empty() {
+        if rows.is_empty() {
             log(
                 "No projects found. Add one with: vcode add <name> <path>",
                 LogType::Info,
             );
             return;
         }
-
-        use inquire::Select;
-        let mut sorted: Vec<_> = projects.iter().collect();
-        sorted.sort_by_key(|(name, _)| name.to_lowercase());
-
-        let options: Vec<String> = sorted
-            .iter()
-            .map(|(name, path)| format!("{} → {}", name, path))
-            .collect();
-
-        match Select::new("Select a project to open:", options)
-            .with_page_size(15)
-            .prompt()
-        {
-            Ok(selected) => {
-                let project_name = selected.split(" → ").next().unwrap();
-                let config = get_config();
-                let editor = editor_override.as_deref().unwrap_or(&config.default_editor);
-
-                if let Some(path) = projects.get(project_name) {
-                    match open_with_editor(editor, path, reuse) {
-                        Ok(()) => {
-                            log(
-                                &format!("Opening '{}' in {}", project_name, editor),
-                                LogType::Success,
-                            );
-                        }
-                        Err(e) => {
-                            log(&format!("✗ Failed to open project: {}", e), LogType::Error);
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                log("Selection cancelled", LogType::Info);
-            }
-        }
-    } else {
-        print_table(&projects);
+        run_interactive_open(&rows, reuse, editor_override);
+        return;
     }
+
+    let pairs: Vec<(String, String)> = rows.into_iter().map(|r| (r.name, r.path)).collect();
+    print_project_rows(&pairs);
+}
+
+/// A list row carrying its (optionally detected) project type so filter and
+/// sort can share one detection pass per project.
+struct TypedRow {
+    name: String,
+    path: String,
+    ty: Option<ProjectType>,
+}
+
+fn sort_rows(rows: &mut [TypedRow], sort: SortKey) {
+    match sort {
+        SortKey::Name => rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        SortKey::Path => rows.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase())),
+        SortKey::Type => rows.sort_by(|a, b| {
+            // Unknowns sort last via the `~` sentinel.
+            let ta = a.ty.map(|t| t.name()).unwrap_or("~");
+            let tb = b.ty.map(|t| t.name()).unwrap_or("~");
+            ta.cmp(tb)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }),
+    }
+}
+
+fn run_interactive_open(rows: &[TypedRow], reuse: bool, editor_override: Option<String>) {
+    use inquire::Select;
+    let options: Vec<String> = rows
+        .iter()
+        .map(|r| format!("{} → {}", r.name, r.path))
+        .collect();
+
+    let selected = match Select::new("Select a project to open:", options.clone())
+        .with_page_size(15)
+        .prompt()
+    {
+        Ok(s) => s,
+        Err(_) => {
+            log("Selection cancelled", LogType::Info);
+            return;
+        }
+    };
+
+    let idx = options.iter().position(|o| o == &selected).unwrap();
+    let row = &rows[idx];
+    let config = get_config();
+    let editor = editor_override.as_deref().unwrap_or(&config.default_editor);
+    open_and_exit(editor, &row.path, &row.name, reuse);
 }
 
 pub fn handle_search(query: String) {
@@ -623,12 +737,25 @@ pub fn handle_clear(yes: bool) {
 
 pub fn handle_open_project(project_name: String, reuse: bool, editor_override: Option<String>) {
     let projects = get_projects();
-    let path = projects.get(&project_name);
     let config = get_config();
     let editor = editor_override.as_deref().unwrap_or(&config.default_editor);
 
-    match path {
-        None => {
+    // 1. Exact match in the registry
+    if let Some(path) = projects.get(&project_name) {
+        open_and_exit(editor, path, &project_name, reuse);
+    }
+
+    // 2. Path fallback — if the argument resolves to an existing directory,
+    //    open it directly. Lets `vcode .`, `vcode ../foo`, `vcode ~/work/x` work.
+    if let Some(resolved) = try_resolve_existing_dir(&project_name) {
+        let display = path_basename(&resolved);
+        open_and_exit(editor, &resolved.to_string_lossy(), &display, reuse);
+    }
+
+    // 3. Fuzzy match against project names (case-insensitive substring)
+    let matches = fuzzy_match_projects(&projects, &project_name);
+    match matches.len() {
+        0 => {
             log(
                 &format!("✗ Project '{}' not found", project_name),
                 LogType::Error,
@@ -639,18 +766,217 @@ pub fn handle_open_project(project_name: String, reuse: bool, editor_override: O
             );
             std::process::exit(1);
         }
-        Some(path) => match open_with_editor(editor, path, reuse) {
-            Ok(()) => {
-                log(
-                    &format!("Opening '{}' in {}", project_name, editor),
-                    LogType::Success,
-                );
-                std::process::exit(0);
+        1 => {
+            let (name, path) = &matches[0];
+            log(
+                &format!("→ Matched '{}'", name),
+                LogType::Info,
+            );
+            open_and_exit(editor, path, name, reuse);
+        }
+        _ => {
+            use inquire::Select;
+            let options: Vec<String> = matches
+                .iter()
+                .map(|(n, p)| format!("{} → {}", n, p))
+                .collect();
+            match Select::new(
+                &format!("Multiple matches for '{}'. Select one:", project_name),
+                options,
+            )
+            .with_page_size(10)
+            .prompt()
+            {
+                Ok(selected) => {
+                    let name = selected.split(" → ").next().unwrap();
+                    let path = matches
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, p)| p)
+                        .unwrap();
+                    open_and_exit(editor, path, name, reuse);
+                }
+                Err(_) => {
+                    log("Selection cancelled", LogType::Info);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                log(&format!("✗ Failed to open project: {}", e), LogType::Error);
-                std::process::exit(1);
+        }
+    }
+}
+
+/// Returns `(name, path)` pairs whose name contains `query` (case-insensitive),
+/// sorted shortest-name-first so that closer-to-exact matches surface above
+/// looser ones (e.g. `api` ranks above `api-service-backend`).
+fn fuzzy_match_projects(
+    projects: &std::collections::HashMap<String, String>,
+    query: &str,
+) -> Vec<(String, String)> {
+    let q = query.to_lowercase();
+    let mut out: Vec<(String, String)> = projects
+        .iter()
+        .filter(|(name, _)| name.to_lowercase().contains(&q))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    out.sort_by_key(|(n, _)| (n.len(), n.to_lowercase()));
+    out
+}
+
+fn open_and_exit(editor: &str, path: &str, label: &str, reuse: bool) -> ! {
+    match open_with_editor(editor, path, reuse) {
+        Ok(()) => {
+            log(
+                &format!("Opening '{}' in {}", label, editor),
+                LogType::Success,
+            );
+            std::process::exit(0);
+        }
+        Err(e) => {
+            log(&format!("✗ Failed to open: {}", e), LogType::Error);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn handle_here(name: Option<String>, reuse: bool, editor_override: Option<String>) {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            log(&format!("✗ Could not determine current directory: {}", e), LogType::Error);
+            std::process::exit(1);
+        }
+    };
+
+    let project_name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| path_basename(&cwd));
+    if project_name.is_empty() {
+        log("✗ Could not infer project name from current directory", LogType::Error);
+        std::process::exit(1);
+    }
+
+    let path_str = cwd.to_string_lossy().into_owned();
+    if let Err(e) = set_project(&project_name, &path_str) {
+        log(&format!("✗ Failed to register project: {}", e), LogType::Error);
+        std::process::exit(1);
+    }
+    log(
+        &format!("✓ Registered '{}' → {}", project_name, path_str),
+        LogType::Success,
+    );
+
+    let config = get_config();
+    let editor = editor_override.as_deref().unwrap_or(&config.default_editor);
+    open_and_exit(editor, &path_str, &project_name, reuse);
+}
+
+pub fn handle_where(name: String) {
+    let projects = get_projects();
+
+    // Exact match → emit path.
+    if let Some(path) = projects.get(&name) {
+        println!("{}", path);
+        return;
+    }
+
+    // Path fallback — print the canonical resolved path so scripts can use it
+    // with `cd $(vcode where ../foo)`.
+    if let Some(resolved) = try_resolve_existing_dir(&name) {
+        println!("{}", resolved.display());
+        return;
+    }
+
+    // Fuzzy match. For scripting safety, only emit when there's a single hit;
+    // multiple matches go to stderr so command substitution captures nothing.
+    let matches = fuzzy_match_projects(&projects, &name);
+    match matches.len() {
+        0 => {
+            eprintln!("vcode: project '{}' not found", name);
+            std::process::exit(1);
+        }
+        1 => {
+            println!("{}", matches[0].1);
+        }
+        _ => {
+            eprintln!("vcode: ambiguous match for '{}', candidates:", name);
+            for (n, p) in &matches {
+                eprintln!("  {} → {}", n, p);
             }
-        },
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn handle_prune(yes: bool) {
+    let mut projects = get_projects();
+    let stale: Vec<(String, String)> = projects
+        .iter()
+        .filter(|(_, path)| {
+            let p = Path::new(path);
+            !p.exists() || !p.is_dir()
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    if stale.is_empty() {
+        log("✓ No stale projects to prune", LogType::Success);
+        return;
+    }
+
+    log(
+        &format!(
+            "Found {} stale project{}:",
+            stale.len(),
+            if stale.len() == 1 { "" } else { "s" }
+        ),
+        LogType::Info,
+    );
+    for (n, p) in &stale {
+        println!("  - {} → {}", n, p);
+    }
+
+    if !yes {
+        use inquire::Confirm;
+        let confirm = Confirm::new("Remove these from the registry?")
+            .with_default(false)
+            .prompt();
+        if !matches!(confirm, Ok(true)) {
+            log("Cancelled", LogType::Info);
+            return;
+        }
+    }
+
+    for (n, _) in &stale {
+        projects.remove(n);
+    }
+    match write_projects(&projects) {
+        Ok(()) => log(
+            &format!(
+                "✓ Pruned {} project{}",
+                stale.len(),
+                if stale.len() == 1 { "" } else { "s" }
+            ),
+            LogType::Success,
+        ),
+        Err(e) => {
+            log(&format!("✗ Failed to write registry: {}", e), LogType::Error);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn handle_update(name: String, path: String) {
+    if !get_projects().contains_key(&name) {
+        log(&format!("✗ Project '{}' not found", name), LogType::Error);
+        std::process::exit(1);
+    }
+
+    match set_project_validated(&name, &path) {
+        Ok(resolved) => log(
+            &format!("✓ Updated '{}' → {}", name, resolved.display()),
+            LogType::Success,
+        ),
+        Err(e) => {
+            log(&format!("✗ {}", e), LogType::Error);
+            std::process::exit(1);
+        }
     }
 }
