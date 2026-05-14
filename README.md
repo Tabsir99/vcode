@@ -42,6 +42,7 @@ On first run, vcode will prompt you for your projects directory and default edit
 | `vcode prune` | - | Remove projects whose paths no longer exist |
 | `vcode list` | `ls` | List all projects |
 | `vcode search <query>` | `find` | Search by name or path |
+| `vcode search <query> --fs` | `find` | Fuzzy-search your projects root for directories matching `<query>` and add what you pick |
 | `vcode rename <old> <new>` | `mv` | Rename a project |
 | `vcode scan [path]` | - | Auto-discover projects |
 | `vcode config` | `cfg` | Manage configuration |
