@@ -69,6 +69,12 @@ enum Commands {
     Search {
         /// Search query
         query: String,
+        /// Search the actual filesystem (under $HOME) for directories whose
+        /// name contains the query, then add the selected ones as projects.
+        /// Use this when you know a project exists on disk but `vcode scan`
+        /// didn't pick it up (e.g. it's outside your projects root).
+        #[arg(short = 'f', long)]
+        fs: bool,
     },
 
     /// Rename a project
@@ -157,7 +163,7 @@ fn main() {
                 sort,
                 filter,
             } => commands::handle_list(json, interactive, cli.reuse, cli.editor, sort, filter),
-            Commands::Search { query } => commands::handle_search(query),
+            Commands::Search { query, fs } => commands::handle_search(query, fs),
             Commands::Rename { old_name, new_name } => commands::handle_rename(old_name, new_name),
             Commands::Scan {
                 path,

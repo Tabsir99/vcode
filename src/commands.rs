@@ -304,10 +304,15 @@ fn run_interactive_open(rows: &[TypedRow], reuse: bool, editor_override: Option<
     open_and_exit(editor, &row.path, &row.name, reuse);
 }
 
-pub fn handle_search(query: String) {
+pub fn handle_search(query: String, fs: bool) {
+    if fs {
+        handle_filesystem_search(query);
+        return;
+    }
+
     let projects = get_projects();
     let query_lower = query.to_lowercase();
-    let filtered: std::collections::HashMap<_, _> = projects
+    let filtered: HashMap<_, _> = projects
         .iter()
         .filter(|(name, path)| {
             name.to_lowercase().contains(&query_lower) || path.to_lowercase().contains(&query_lower)
@@ -323,6 +328,119 @@ pub fn handle_search(query: String) {
     } else {
         log(&format!("Projects matching '{}':", query), LogType::Info);
         print_table(&filtered);
+    }
+}
+
+/// Walk the filesystem under $HOME for directories whose name contains `query`,
+/// then run the same multi-select + add flow that `vcode scan` uses. Lets the
+/// user adopt projects living outside their configured projects root.
+fn handle_filesystem_search(query: String) {
+    if query.trim().is_empty() {
+        log("✗ Query is empty", LogType::Error);
+        std::process::exit(1);
+    }
+
+    log(
+        &format!("Searching filesystem for '{}'...", query),
+        LogType::Info,
+    );
+
+    let matches = match crate::scanner::search_directories(&query, crate::scanner::NameMatch::Substring) {
+        Ok(m) => m,
+        Err(e) => {
+            log(&format!("✗ Search failed: {}", e), LogType::Error);
+            std::process::exit(1);
+        }
+    };
+
+    if matches.is_empty() {
+        log(
+            &format!("No directories matching '{}' found under $HOME", query),
+            LogType::Info,
+        );
+        return;
+    }
+
+    // Hand the matches to the existing scan pipeline so users get the same
+    // multi-select UI (with project-type tags) and bulk-add behavior.
+    //
+    // We compare canonicalized paths on both sides: `vcode add` canonicalizes
+    // before storing, but `vcode scan` does not, and `search_directories`
+    // produces paths via `home_dir().join(...)` which can carry symlinks (e.g.
+    // `/home` symlinked to `/mnt/...`, macOS `/var` -> `/private/var`).
+    // Canonicalizing both sides makes the dedup work regardless of which path
+    // was used to add the entry. If canonicalization fails (e.g. stale
+    // registry entry pointing nowhere), fall back to the raw path so we still
+    // produce a usable set.
+    let already_registered: std::collections::HashSet<PathBuf> = get_projects()
+        .values()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p)))
+        .collect();
+
+    let found: Vec<crate::scanner::FoundProject> = matches
+        .into_iter()
+        .map(|m| {
+            let canonical = std::fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone());
+            crate::scanner::FoundProject {
+                project_type: detect_project_type(&canonical),
+                name: m.name,
+                path: canonical,
+            }
+        })
+        .collect();
+
+    let total = found.len();
+    let new_only: Vec<crate::scanner::FoundProject> = found
+        .into_iter()
+        .filter(|f| !already_registered.contains(&f.path))
+        .collect();
+
+    let skipped = total - new_only.len();
+    log(
+        &format!(
+            "✓ Found {} match{}{}",
+            total,
+            if total == 1 { "" } else { "es" },
+            if skipped > 0 {
+                format!(" ({} already registered, hidden)", skipped)
+            } else {
+                String::new()
+            }
+        ),
+        LogType::Success,
+    );
+
+    if new_only.is_empty() {
+        log("Nothing new to add", LogType::Info);
+        return;
+    }
+
+    let to_add = match interactive_select_projects(new_only) {
+        Ok(s) => s,
+        Err(_) => {
+            log("Cancelled", LogType::Info);
+            return;
+        }
+    };
+
+    if to_add.is_empty() {
+        log("No projects selected", LogType::Info);
+        return;
+    }
+
+    match add_projects(to_add) {
+        Ok(n) => log(
+            &format!(
+                "\n✓ Added {} project{}",
+                n,
+                if n == 1 { "" } else { "s" }
+            ),
+            LogType::Success,
+        ),
+        Err(e) => {
+            log(&format!("✗ Failed to add projects: {}", e), LogType::Error);
+            std::process::exit(1);
+        }
     }
 }
 

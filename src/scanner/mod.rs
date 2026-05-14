@@ -11,6 +11,6 @@ pub mod scanner;
 // Re-export commonly used items
 pub use detector::{ProjectType, detect_project_type, is_project_directory};
 pub use scanner::{
-    DirectoryMatch, FilterMode, FoundProject, add_projects, interactive_select_projects,
-    scan_projects, search_directory_by_name,
+    DirectoryMatch, FilterMode, FoundProject, NameMatch, add_projects,
+    interactive_select_projects, scan_projects, search_directories, search_directory_by_name,
 };

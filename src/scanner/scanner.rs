@@ -169,41 +169,73 @@ pub struct DirectoryMatch {
     pub path: PathBuf,
 }
 
-/// Searches the filesystem for directories matching the given name
-///
-/// Starts from the user's home directory and common project locations.
-/// Skips known build/dependency directories (node_modules, target, etc.)
-///
-/// # Arguments
-/// * `dir_name` - The directory name to search for (case-insensitive)
-///
-/// # Returns
-/// Vector of matching directories, sorted by path length (shortest first)
-pub fn search_directory_by_name(dir_name: &str) -> Result<Vec<DirectoryMatch>, Box<dyn std::error::Error>> {
+/// How a query is compared against a directory name during filesystem search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameMatch {
+    /// Case-insensitive equality. Best when the user knows the exact directory name.
+    Exact,
+    /// Case-insensitive substring. Best for "I know roughly what it's called".
+    Substring,
+}
+
+impl NameMatch {
+    fn matches(self, candidate_lower: &str, query_lower: &str) -> bool {
+        match self {
+            NameMatch::Exact => candidate_lower == query_lower,
+            NameMatch::Substring => candidate_lower.contains(query_lower),
+        }
+    }
+
+    fn result_limit(self) -> usize {
+        // Substring is broader, so allow a few more before truncating.
+        match self {
+            NameMatch::Exact => 20,
+            NameMatch::Substring => 30,
+        }
+    }
+}
+
+/// Walks the filesystem from the user's home directory looking for directories
+/// whose name matches `query` under the given `mode`. Skips known build /
+/// dependency / system directories. Results are sorted by path depth (then by
+/// name length for substring mode, so closer-to-exact hits surface first) and
+/// truncated to a sane limit.
+pub fn search_directories(
+    query: &str,
+    mode: NameMatch,
+) -> Result<Vec<DirectoryMatch>, Box<dyn std::error::Error>> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
     let mut matches = Vec::new();
-    let target_name = dir_name.to_lowercase();
+    let target = query.to_lowercase();
 
-    // Search from home directory with reasonable depth
-    search_recursive(&home, &target_name, 0, 6, &mut matches);
+    search_recursive(&home, &target, mode, 0, 6, &mut matches);
 
-    // Sort by path length (prefer shallower matches)
     matches.sort_by(|a, b| {
         let depth_a = a.path.components().count();
         let depth_b = b.path.components().count();
-        depth_a.cmp(&depth_b)
+        depth_a
+            .cmp(&depth_b)
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
-    // Limit results to avoid overwhelming the user
-    matches.truncate(20);
+    matches.truncate(mode.result_limit());
 
     Ok(matches)
 }
 
+/// Thin wrapper preserved for existing callers: exact-name filesystem search.
+pub fn search_directory_by_name(
+    dir_name: &str,
+) -> Result<Vec<DirectoryMatch>, Box<dyn std::error::Error>> {
+    search_directories(dir_name, NameMatch::Exact)
+}
+
 fn search_recursive(
     current_path: &Path,
-    target_name: &str,
+    target: &str,
+    mode: NameMatch,
     current_depth: u32,
     max_depth: u32,
     matches: &mut Vec<DirectoryMatch>,
@@ -229,7 +261,6 @@ fn search_recursive(
             None => continue,
         };
 
-        // Skip hidden directories after root level
         if dir_name.starts_with('.') && current_depth > 0 {
             continue;
         }
@@ -238,7 +269,8 @@ fn search_recursive(
             continue;
         }
 
-        if dir_name.to_lowercase() == target_name {
+        let lower = dir_name.to_lowercase();
+        if mode.matches(&lower, target) {
             matches.push(DirectoryMatch {
                 name: dir_name.to_string(),
                 path: path.clone(),
@@ -246,7 +278,7 @@ fn search_recursive(
         }
 
         if current_depth < max_depth {
-            search_recursive(&path, target_name, current_depth + 1, max_depth, matches);
+            search_recursive(&path, target, mode, current_depth + 1, max_depth, matches);
         }
     }
 }
@@ -432,5 +464,46 @@ mod tests {
         assert!(should_skip_dir("target"));
         assert!(should_skip_dir(".git"));
         assert!(!should_skip_dir("my-project"));
+    }
+
+    #[test]
+    fn test_name_match_exact_vs_substring() {
+        assert!(NameMatch::Exact.matches("vcode", "vcode"));
+        assert!(!NameMatch::Exact.matches("vcode-cli", "vcode"));
+        assert!(NameMatch::Substring.matches("vcode-cli", "vcode"));
+        assert!(NameMatch::Substring.matches("my-vcode-thing", "vcode"));
+        assert!(!NameMatch::Substring.matches("other", "vcode"));
+    }
+
+    #[test]
+    fn test_search_recursive_substring() {
+        let temp_dir = TempDir::new().unwrap();
+        let a = temp_dir.path().join("vcode-cli");
+        let b = temp_dir.path().join("nested").join("my-vcode-thing");
+        let c = temp_dir.path().join("unrelated");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::create_dir_all(&c).unwrap();
+
+        let mut found = Vec::new();
+        search_recursive(temp_dir.path(), "vcode", NameMatch::Substring, 0, 4, &mut found);
+
+        let names: Vec<&str> = found.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"vcode-cli"));
+        assert!(names.contains(&"my-vcode-thing"));
+        assert!(!names.contains(&"unrelated"));
+    }
+
+    #[test]
+    fn test_search_recursive_exact_rejects_substring() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::create_dir(temp_dir.path().join("vcode-cli")).unwrap();
+        fs::create_dir(temp_dir.path().join("vcode")).unwrap();
+
+        let mut found = Vec::new();
+        search_recursive(temp_dir.path(), "vcode", NameMatch::Exact, 0, 2, &mut found);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "vcode");
     }
 }

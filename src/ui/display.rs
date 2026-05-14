@@ -51,10 +51,13 @@ pub fn print_project_rows(rows: &[(String, String)]) {
             break;
         }
 
-        use inquire::Select;
-        let options = vec!["Next page", "Exit"];
-        match Select::new("", options).without_help_message().prompt() {
-            Ok("Next page") => current_page += 1,
+        // `Confirm` is intentional here: the previous `Select::new("", …)` came
+        // with a built-in text-filter input that only made sense for many
+        // options. With two ("next"/"exit") the filter did nothing and looked
+        // like a broken prompt. Confirm gives a clean (Y/n).
+        use inquire::Confirm;
+        match Confirm::new("Show next page?").with_default(true).prompt() {
+            Ok(true) => current_page += 1,
             _ => break,
         }
     }
