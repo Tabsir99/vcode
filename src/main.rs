@@ -154,6 +154,17 @@ enum Commands {
 
 
 fn main() {
+    // Hidden re-exec used by `--cd` on Linux to keep the clipboard alive
+    // after the user's invocation returns. Intercepted here before clap
+    // parsing so it never shows up in `--help`.
+    #[cfg(target_os = "linux")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() >= 3 && args[1] == vcode::core::clipboard::DAEMON_SUBCOMMAND {
+            vcode::core::clipboard::run_daemon(&args[2]);
+        }
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
