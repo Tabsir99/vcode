@@ -5,11 +5,13 @@
 //! - Project CRUD operations (project.rs)
 //! - Editor integration (editor.rs)
 
+pub mod clipboard;
 pub mod config;
 pub mod editor;
 pub mod project;
 
 // Re-export commonly used items
+pub use clipboard::copy_cd_to_clipboard;
 pub use config::{Config, EditorConfig, get_config, get_config_path, init_config, reset_config, update_config};
 pub use editor::{is_vscode_like_editor, open_with_editor};
 pub use project::{

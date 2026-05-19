@@ -21,6 +21,7 @@ cd vcode && cargo install --path .
 vcode myproject           # Open project in default editor
 vcode myproject -e nvim   # Open with specific editor
 vcode myproject -r        # Reuse existing window
+vcode myproject -c        # Copy `cd <path>` to clipboard instead of opening
 vcode .                   # Open current directory (no registration needed)
 vcode ../sibling          # Open any path directly
 vcode api                 # Fuzzy match — opens 'api-service' if it's the only hit
@@ -95,6 +96,10 @@ vcode list -F javascript --sort type
 ```bash
 # Jump into a project directory in your shell
 cd "$(vcode where myproject)"
+
+# Or copy `cd <path>` to the system clipboard: `vcode myproject -c`
+# Works with `vcode <name>`, `vcode find <q>`, `vcode where <name>`.
+# Falls back to printing the command on stdout if the clipboard is unavailable.
 
 # Generate completions (bash, zsh, fish, powershell, elvish)
 vcode completions zsh > ~/.zsh/completions/_vcode

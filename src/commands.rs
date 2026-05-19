@@ -1,4 +1,5 @@
 use crate::core::{
+    clipboard::copy_cd_to_clipboard,
     config::{EditorConfig, get_config, reset_config, update_config},
     editor::open_with_editor,
     project::{
@@ -304,8 +305,15 @@ fn run_interactive_open(rows: &[TypedRow], reuse: bool, editor_override: Option<
     open_and_exit(editor, &row.path, &row.name, reuse);
 }
 
-pub fn handle_search(query: String, fs: bool) {
+pub fn handle_search(query: String, fs: bool, copy_cd: bool) {
     if fs {
+        if copy_cd {
+            log(
+                "✗ --cd cannot be combined with --fs (filesystem search adds projects)",
+                LogType::Error,
+            );
+            std::process::exit(1);
+        }
         handle_filesystem_search(query);
         return;
     }
@@ -325,10 +333,26 @@ pub fn handle_search(query: String, fs: bool) {
             &format!("No projects found matching '{}'", query),
             LogType::Info,
         );
-    } else {
-        log(&format!("Projects matching '{}':", query), LogType::Info);
-        print_table(&filtered);
+        if copy_cd {
+            std::process::exit(1);
+        }
+        return;
     }
+
+    if copy_cd {
+        let mut entries: Vec<(String, String)> = filtered.into_iter().collect();
+        entries.sort_by_key(|(n, _)| (n.len(), n.to_lowercase()));
+        let (_, path) = if entries.len() == 1 {
+            entries.remove(0)
+        } else {
+            pick_match(&format!("Multiple matches for '{}'. Select one to copy:", query), entries)
+        };
+        copy_cd_to_clipboard(&path);
+        return;
+    }
+
+    log(&format!("Projects matching '{}':", query), LogType::Info);
+    print_table(&filtered);
 }
 
 /// Walk the configured projects root for directories whose name contains
@@ -883,31 +907,42 @@ pub fn handle_clear(yes: bool) {
     }
 }
 
-pub fn handle_open_project(project_name: String, reuse: bool, editor_override: Option<String>) {
+pub fn handle_open_project(
+    project_name: String,
+    reuse: bool,
+    editor_override: Option<String>,
+    copy_cd: bool,
+) {
     let projects = get_projects();
+    let (label, path) = resolve_open_target(&project_name, &projects);
+
+    if copy_cd {
+        copy_cd_to_clipboard(&path);
+        return;
+    }
+
     let config = get_config();
     let editor = editor_override.as_deref().unwrap_or(&config.default_editor);
+    open_and_exit(editor, &path, &label, reuse);
+}
 
-    // 1. Exact match in the registry
-    if let Some(path) = projects.get(&project_name) {
-        open_and_exit(editor, path, &project_name, reuse);
+/// Resolve `project_name` to a (label, path) pair via exact → path → fuzzy
+/// fallbacks, prompting if fuzzy matches are ambiguous. Exits on miss or cancel.
+fn resolve_open_target(
+    project_name: &str,
+    projects: &HashMap<String, String>,
+) -> (String, String) {
+    if let Some(path) = projects.get(project_name) {
+        return (project_name.to_string(), path.clone());
+    }
+    if let Some(resolved) = try_resolve_existing_dir(project_name) {
+        return (path_basename(&resolved), resolved.to_string_lossy().into_owned());
     }
 
-    // 2. Path fallback — if the argument resolves to an existing directory,
-    //    open it directly. Lets `vcode .`, `vcode ../foo`, `vcode ~/work/x` work.
-    if let Some(resolved) = try_resolve_existing_dir(&project_name) {
-        let display = path_basename(&resolved);
-        open_and_exit(editor, &resolved.to_string_lossy(), &display, reuse);
-    }
-
-    // 3. Fuzzy match against project names (case-insensitive substring)
-    let matches = fuzzy_match_projects(&projects, &project_name);
+    let mut matches = fuzzy_match_projects(projects, project_name);
     match matches.len() {
         0 => {
-            log(
-                &format!("✗ Project '{}' not found", project_name),
-                LogType::Error,
-            );
+            log(&format!("✗ Project '{}' not found", project_name), LogType::Error);
             log(
                 "\nTip: Use 'vcode list' to see all projects or 'vcode add' to add a new one",
                 LogType::Info,
@@ -915,40 +950,32 @@ pub fn handle_open_project(project_name: String, reuse: bool, editor_override: O
             std::process::exit(1);
         }
         1 => {
-            let (name, path) = &matches[0];
-            log(
-                &format!("→ Matched '{}'", name),
-                LogType::Info,
-            );
-            open_and_exit(editor, path, name, reuse);
+            let (name, path) = matches.remove(0);
+            log(&format!("→ Matched '{}'", name), LogType::Info);
+            (name, path)
         }
-        _ => {
-            use inquire::Select;
-            let options: Vec<String> = matches
-                .iter()
-                .map(|(n, p)| format!("{} → {}", n, p))
-                .collect();
-            match Select::new(
-                &format!("Multiple matches for '{}'. Select one:", project_name),
-                options,
-            )
-            .with_page_size(10)
-            .prompt()
-            {
-                Ok(selected) => {
-                    let name = selected.split(" → ").next().unwrap();
-                    let path = matches
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, p)| p)
-                        .unwrap();
-                    open_and_exit(editor, path, name, reuse);
-                }
-                Err(_) => {
-                    log("Selection cancelled", LogType::Info);
-                    std::process::exit(1);
-                }
-            }
+        _ => pick_match(
+            &format!("Multiple matches for '{}'. Select one:", project_name),
+            matches,
+        ),
+    }
+}
+
+/// Prompt the user to choose one of `candidates`. Exits the process on cancel.
+fn pick_match(prompt: &str, candidates: Vec<(String, String)>) -> (String, String) {
+    use inquire::Select;
+    let options: Vec<String> = candidates
+        .iter()
+        .map(|(n, p)| format!("{} → {}", n, p))
+        .collect();
+    match Select::new(prompt, options.clone()).with_page_size(10).prompt() {
+        Ok(selected) => {
+            let idx = options.iter().position(|o| o == &selected).unwrap();
+            candidates.into_iter().nth(idx).unwrap()
+        }
+        Err(_) => {
+            log("Selection cancelled", LogType::Info);
+            std::process::exit(1);
         }
     }
 }
@@ -1016,32 +1043,35 @@ pub fn handle_here(name: Option<String>, reuse: bool, editor_override: Option<St
     open_and_exit(editor, &path_str, &project_name, reuse);
 }
 
-pub fn handle_where(name: String) {
+pub fn handle_where(name: String, copy_cd: bool) {
     let projects = get_projects();
 
-    // Exact match → emit path.
+    let emit = |path: &str| {
+        if copy_cd { copy_cd_to_clipboard(path); } else { println!("{}", path); }
+    };
+
     if let Some(path) = projects.get(&name) {
-        println!("{}", path);
+        emit(path);
         return;
     }
-
-    // Path fallback — print the canonical resolved path so scripts can use it
-    // with `cd $(vcode where ../foo)`.
     if let Some(resolved) = try_resolve_existing_dir(&name) {
-        println!("{}", resolved.display());
+        emit(&resolved.to_string_lossy());
         return;
     }
 
-    // Fuzzy match. For scripting safety, only emit when there's a single hit;
-    // multiple matches go to stderr so command substitution captures nothing.
+    // Fuzzy match. Without `-c` ambiguity is fatal (scripts substitute stdout);
+    // with `-c` we can prompt since there's no substitution contract.
     let matches = fuzzy_match_projects(&projects, &name);
     match matches.len() {
         0 => {
             eprintln!("vcode: project '{}' not found", name);
             std::process::exit(1);
         }
-        1 => {
-            println!("{}", matches[0].1);
+        1 => emit(&matches[0].1),
+        _ if copy_cd => {
+            let prompt = format!("Multiple matches for '{}'. Select one to copy:", name);
+            let (_, path) = pick_match(&prompt, matches);
+            copy_cd_to_clipboard(&path);
         }
         _ => {
             eprintln!("vcode: ambiguous match for '{}', candidates:", name);
