@@ -1016,19 +1016,38 @@ pub fn handle_here(name: Option<String>, reuse: bool, editor_override: Option<St
     open_and_exit(editor, &path_str, &project_name, reuse);
 }
 
-pub fn handle_where(name: String) {
+pub fn handle_where(name: String, cd: bool) {
     let projects = get_projects();
+
+    // When --cd is set, we copy `cd <path>` to the clipboard and report on
+    // stderr; otherwise we keep the existing `println!` shell-substitution
+    // behaviour intact.
+    let emit = |path: &str| {
+        if cd {
+            match crate::core::clipboard::copy_cd_command(path) {
+                Ok(copied) => {
+                    eprintln!("{}", format!("✓ Copied: {}", copied).green().bold());
+                }
+                Err(e) => {
+                    eprintln!("vcode: clipboard error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            println!("{}", path);
+        }
+    };
 
     // Exact match → emit path.
     if let Some(path) = projects.get(&name) {
-        println!("{}", path);
+        emit(path);
         return;
     }
 
-    // Path fallback — print the canonical resolved path so scripts can use it
+    // Path fallback — emit the canonical resolved path so scripts can use it
     // with `cd $(vcode where ../foo)`.
     if let Some(resolved) = try_resolve_existing_dir(&name) {
-        println!("{}", resolved.display());
+        emit(&resolved.display().to_string());
         return;
     }
 
@@ -1041,7 +1060,7 @@ pub fn handle_where(name: String) {
             std::process::exit(1);
         }
         1 => {
-            println!("{}", matches[0].1);
+            emit(&matches[0].1);
         }
         _ => {
             eprintln!("vcode: ambiguous match for '{}', candidates:", name);

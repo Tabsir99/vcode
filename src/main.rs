@@ -125,6 +125,9 @@ enum Commands {
     Where {
         /// Project name (supports fuzzy match)
         name: String,
+        /// Copy `cd <path>` to the system clipboard instead of printing the path
+        #[arg(long)]
+        cd: bool,
     },
 
     /// Remove projects whose paths no longer exist on disk
@@ -174,7 +177,7 @@ fn main() {
             Commands::Config { action } => commands::handle_config(action),
             Commands::Clear { yes } => commands::handle_clear(yes),
             Commands::Here { name } => commands::handle_here(name, cli.reuse, cli.editor),
-            Commands::Where { name } => commands::handle_where(name),
+            Commands::Where { name, cd } => commands::handle_where(name, cd),
             Commands::Prune { yes } => commands::handle_prune(yes),
             Commands::Update { name, path } => commands::handle_update(name, path),
             Commands::Completions { shell } => {

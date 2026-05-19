@@ -4,7 +4,9 @@
 //! - Configuration management (config.rs)
 //! - Project CRUD operations (project.rs)
 //! - Editor integration (editor.rs)
+//! - Clipboard integration (clipboard.rs)
 
+pub mod clipboard;
 pub mod config;
 pub mod editor;
 pub mod project;
