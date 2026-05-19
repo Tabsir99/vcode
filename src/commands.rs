@@ -25,6 +25,22 @@ pub enum SortKey {
     Type,
 }
 
+/// Copies `cd <path>` to the system clipboard, prints a `✓ Copied: ...`
+/// notice on stderr, and exits the process. Diverges either way so callers
+/// can use it as the terminal action of a `--cd` branch.
+fn copy_cd_to_clipboard_or_exit(path: &str) -> ! {
+    match crate::core::clipboard::copy_cd_command(path) {
+        Ok(copied) => {
+            eprintln!("{}", format!("✓ Copied: {}", copied).green().bold());
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("vcode: clipboard error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Config subcommand actions
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigAction {
@@ -304,21 +320,45 @@ fn run_interactive_open(rows: &[TypedRow], reuse: bool, editor_override: Option<
     open_and_exit(editor, &row.path, &row.name, reuse);
 }
 
-pub fn handle_search(query: String, fs: bool) {
+pub fn handle_search(query: String, fs: bool, cd: bool) {
     if fs {
+        // `--fs` is an interactive add-from-filesystem workflow; `--cd` is a
+        // copy-a-single-path action. They have no sensible combined meaning,
+        // so we refuse the combo rather than picking arbitrarily.
+        if cd {
+            eprintln!("vcode: --cd cannot be combined with --fs");
+            std::process::exit(1);
+        }
         handle_filesystem_search(query);
         return;
     }
 
     let projects = get_projects();
     let query_lower = query.to_lowercase();
-    let filtered: HashMap<_, _> = projects
+    let filtered: HashMap<String, String> = projects
         .iter()
         .filter(|(name, path)| {
             name.to_lowercase().contains(&query_lower) || path.to_lowercase().contains(&query_lower)
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+
+    if cd {
+        if filtered.is_empty() {
+            eprintln!("vcode: no projects match '{}'", query);
+            std::process::exit(1);
+        }
+        // Best-match ranking: name-substring matches rank above path-only
+        // matches; among them, shorter names rank higher (closer-to-exact);
+        // alphabetical tiebreaker. Mirrors `fuzzy_match_projects`'s heuristic
+        // but extended to the name-OR-path filter `search` uses.
+        let mut ranked: Vec<(&String, &String)> = filtered.iter().collect();
+        ranked.sort_by_key(|(name, _)| {
+            let name_match = name.to_lowercase().contains(&query_lower);
+            (!name_match, name.len(), name.to_lowercase())
+        });
+        copy_cd_to_clipboard_or_exit(ranked[0].1);
+    }
 
     if filtered.is_empty() {
         log(
@@ -883,21 +923,45 @@ pub fn handle_clear(yes: bool) {
     }
 }
 
-pub fn handle_open_project(project_name: String, reuse: bool, editor_override: Option<String>) {
+pub fn handle_open_project(
+    project_name: String,
+    reuse: bool,
+    editor_override: Option<String>,
+    cd: bool,
+) {
     let projects = get_projects();
-    let config = get_config();
-    let editor = editor_override.as_deref().unwrap_or(&config.default_editor);
+
+    // Resolve the editor lazily. First-run `get_config()` prompts on stdin
+    // for projects-root / default-editor, and `--cd` doesn't need either of
+    // them — so we only pay that cost (and only fail on it) when we're
+    // actually about to open something.
+    let resolve_editor = || -> String {
+        if let Some(e) = &editor_override {
+            e.clone()
+        } else {
+            get_config().default_editor
+        }
+    };
 
     // 1. Exact match in the registry
     if let Some(path) = projects.get(&project_name) {
-        open_and_exit(editor, path, &project_name, reuse);
+        if cd {
+            copy_cd_to_clipboard_or_exit(path);
+        }
+        let editor = resolve_editor();
+        open_and_exit(&editor, path, &project_name, reuse);
     }
 
     // 2. Path fallback — if the argument resolves to an existing directory,
     //    open it directly. Lets `vcode .`, `vcode ../foo`, `vcode ~/work/x` work.
     if let Some(resolved) = try_resolve_existing_dir(&project_name) {
+        let resolved_str = resolved.to_string_lossy();
+        if cd {
+            copy_cd_to_clipboard_or_exit(&resolved_str);
+        }
         let display = path_basename(&resolved);
-        open_and_exit(editor, &resolved.to_string_lossy(), &display, reuse);
+        let editor = resolve_editor();
+        open_and_exit(&editor, &resolved_str, &display, reuse);
     }
 
     // 3. Fuzzy match against project names (case-insensitive substring)
@@ -916,11 +980,15 @@ pub fn handle_open_project(project_name: String, reuse: bool, editor_override: O
         }
         1 => {
             let (name, path) = &matches[0];
+            if cd {
+                copy_cd_to_clipboard_or_exit(path);
+            }
             log(
                 &format!("→ Matched '{}'", name),
                 LogType::Info,
             );
-            open_and_exit(editor, path, name, reuse);
+            let editor = resolve_editor();
+            open_and_exit(&editor, path, name, reuse);
         }
         _ => {
             use inquire::Select;
@@ -942,7 +1010,11 @@ pub fn handle_open_project(project_name: String, reuse: bool, editor_override: O
                         .find(|(n, _)| n == name)
                         .map(|(_, p)| p)
                         .unwrap();
-                    open_and_exit(editor, path, name, reuse);
+                    if cd {
+                        copy_cd_to_clipboard_or_exit(path);
+                    }
+                    let editor = resolve_editor();
+                    open_and_exit(&editor, path, name, reuse);
                 }
                 Err(_) => {
                     log("Selection cancelled", LogType::Info);
@@ -1019,23 +1091,13 @@ pub fn handle_here(name: Option<String>, reuse: bool, editor_override: Option<St
 pub fn handle_where(name: String, cd: bool) {
     let projects = get_projects();
 
-    // When --cd is set, we copy `cd <path>` to the clipboard and report on
-    // stderr; otherwise we keep the existing `println!` shell-substitution
-    // behaviour intact.
+    // When --cd is set we delegate to the shared clipboard exit helper;
+    // otherwise we keep the existing `println!` shell-substitution behaviour.
     let emit = |path: &str| {
         if cd {
-            match crate::core::clipboard::copy_cd_command(path) {
-                Ok(copied) => {
-                    eprintln!("{}", format!("✓ Copied: {}", copied).green().bold());
-                }
-                Err(e) => {
-                    eprintln!("vcode: clipboard error: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            println!("{}", path);
+            copy_cd_to_clipboard_or_exit(path);
         }
+        println!("{}", path);
     };
 
     // Exact match → emit path.

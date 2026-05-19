@@ -22,6 +22,11 @@ struct Cli {
     #[arg(short, long)]
     editor: Option<String>,
 
+    /// Copy `cd <path>` to the clipboard instead of the default action
+    /// (works with `vcode <project>`, `vcode where`, and `vcode find`).
+    #[arg(long, global = true)]
+    cd: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -125,9 +130,6 @@ enum Commands {
     Where {
         /// Project name (supports fuzzy match)
         name: String,
-        /// Copy `cd <path>` to the system clipboard instead of printing the path
-        #[arg(long)]
-        cd: bool,
     },
 
     /// Remove projects whose paths no longer exist on disk
@@ -177,7 +179,7 @@ fn main() {
                 sort,
                 filter,
             } => commands::handle_list(json, interactive, cli.reuse, cli.editor, sort, filter),
-            Commands::Search { query, fs } => commands::handle_search(query, fs),
+            Commands::Search { query, fs } => commands::handle_search(query, fs, cli.cd),
             Commands::Rename { old_name, new_name } => commands::handle_rename(old_name, new_name),
             Commands::Scan {
                 path,
@@ -188,7 +190,7 @@ fn main() {
             Commands::Config { action } => commands::handle_config(action),
             Commands::Clear { yes } => commands::handle_clear(yes),
             Commands::Here { name } => commands::handle_here(name, cli.reuse, cli.editor),
-            Commands::Where { name, cd } => commands::handle_where(name, cd),
+            Commands::Where { name } => commands::handle_where(name, cli.cd),
             Commands::Prune { yes } => commands::handle_prune(yes),
             Commands::Update { name, path } => commands::handle_update(name, path),
             Commands::Completions { shell } => {
@@ -198,7 +200,7 @@ fn main() {
         },
         None => match cli.project_name {
             Some(project_name) => {
-                commands::handle_open_project(project_name, cli.reuse, cli.editor)
+                commands::handle_open_project(project_name, cli.reuse, cli.editor, cli.cd)
             }
             None => {
                 log("vcode - Quick Project Launcher", LogType::Info);
