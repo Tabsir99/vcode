@@ -125,6 +125,9 @@ enum Commands {
     Where {
         /// Project name (supports fuzzy match)
         name: String,
+        /// Copy `cd <path>` to the system clipboard instead of printing the path
+        #[arg(long)]
+        cd: bool,
     },
 
     /// Remove projects whose paths no longer exist on disk
@@ -151,6 +154,17 @@ enum Commands {
 
 
 fn main() {
+    // Hidden re-exec used by `--cd` on Linux to keep the clipboard alive
+    // after the user's invocation returns. Intercepted here before clap
+    // parsing so it never shows up in `--help`.
+    #[cfg(target_os = "linux")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() >= 3 && args[1] == vcode::core::clipboard::DAEMON_SUBCOMMAND {
+            vcode::core::clipboard::run_daemon(&args[2]);
+        }
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -174,7 +188,7 @@ fn main() {
             Commands::Config { action } => commands::handle_config(action),
             Commands::Clear { yes } => commands::handle_clear(yes),
             Commands::Here { name } => commands::handle_here(name, cli.reuse, cli.editor),
-            Commands::Where { name } => commands::handle_where(name),
+            Commands::Where { name, cd } => commands::handle_where(name, cd),
             Commands::Prune { yes } => commands::handle_prune(yes),
             Commands::Update { name, path } => commands::handle_update(name, path),
             Commands::Completions { shell } => {
